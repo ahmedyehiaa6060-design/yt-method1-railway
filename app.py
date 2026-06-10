@@ -41,20 +41,20 @@ cached_proxy = None
 def test_single_proxy(proxy_str):
     """يفحص بروكسي منفرد ويقيس سرعة الاستجابة بالثواني"""
     try:
-        # استخدام socks5h للـ socks5 لتمرير الـ DNS عبر البروكسي وتجنب الحجب
         test_str = proxy_str.replace("socks5://", "socks5h://")
         start = time.time()
+        # زيادة مهلة الفحص إلى 9.5 ثوانٍ لضمان عدم تفويت البروكسيات الشغالة
         test = requests.get(
-            "https://www.youtube.com",
+            "https://www.google.com",
             proxies={"http": test_str, "https": test_str},
-            timeout=4.5
+            timeout=9.5
         )
         if test.status_code == 200:
             latency = time.time() - start
             return test_str, latency
     except Exception as e:
-        # طباعة الخطأ في السجلات للتشخيص (إذا كانت هناك مشكلة في مكتبات SOCKS)
-        print(f"❌ خطأ فحص البروكسي {proxy_str}: {e}")
+        # طباعة خفيفة للتشخيص
+        print(f"⚠️ خطأ فحص {proxy_str}: {e}")
     return None
 
 
@@ -73,17 +73,17 @@ def get_working_proxy():
 
     print("⏳ جاري البحث عن بروكسيات (SOCKS5/HTTP) عالية الجودة والتفاف الحظر...")
     
-    # مصادر مصفاة تعطي بروكسيات Anonymous / Elite سريعة
+    # زيادة مهلة الفلترة المسبقة للمزود إلى 1500 مللي ثانية للحصول على عدد أكبر من الخيارات
     sources = [
-        ("socks5", "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=2000&country=all&ssl=all&anonymity=anonymous"),
-        ("http", "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=2000&country=all&ssl=all&anonymity=anonymous"),
+        ("socks5", "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=1500&country=US,GB,DE,FR,NL,CA&ssl=yes&anonymity=anonymous"),
+        ("http", "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=1500&country=US,GB,DE,FR,NL,CA&ssl=yes&anonymity=anonymous"),
         ("socks5", "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt")
     ]
     
     proxy_candidates = []
     for proto, url in sources:
         try:
-            r = requests.get(url, timeout=5)
+            r = requests.get(url, timeout=8)
             if r.status_code == 200:
                 lines = [l.strip() for l in r.text.strip().split("\n") if l.strip()]
                 for p in lines:
