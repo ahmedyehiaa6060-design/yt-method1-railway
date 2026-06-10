@@ -41,17 +41,20 @@ cached_proxy = None
 def test_single_proxy(proxy_str):
     """يفحص بروكسي منفرد ويقيس سرعة الاستجابة بالثواني"""
     try:
+        # استخدام socks5h للـ socks5 لتمرير الـ DNS عبر البروكسي وتجنب الحجب
+        test_str = proxy_str.replace("socks5://", "socks5h://")
         start = time.time()
         test = requests.get(
             "https://www.youtube.com",
-            proxies={"http": proxy_str, "https": proxy_str},
-            timeout=2.5
+            proxies={"http": test_str, "https": test_str},
+            timeout=4.5
         )
         if test.status_code == 200:
             latency = time.time() - start
-            return proxy_str, latency
-    except:
-        pass
+            return test_str, latency
+    except Exception as e:
+        # طباعة الخطأ في السجلات للتشخيص (إذا كانت هناك مشكلة في مكتبات SOCKS)
+        print(f"❌ خطأ فحص البروكسي {proxy_str}: {e}")
     return None
 
 
@@ -68,37 +71,42 @@ def get_working_proxy():
             print("⚠️ البروكسي المخزن توقف عن العمل، جاري البحث عن بديل...")
             cached_proxy = None
 
-    print("⏳ جاري البحث عن بروكسيات SOCKS5 عالية الجودة والتفاف الحظر...")
+    print("⏳ جاري البحث عن بروكسيات (SOCKS5/HTTP) عالية الجودة والتفاف الحظر...")
     
     # مصادر مصفاة تعطي بروكسيات Anonymous / Elite سريعة
     sources = [
-        "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=1500&country=all&ssl=all&anonymity=anonymous",
-        "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt"
+        ("socks5", "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=2000&country=all&ssl=all&anonymity=anonymous"),
+        ("http", "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=2000&country=all&ssl=all&anonymity=anonymous"),
+        ("socks5", "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt")
     ]
     
-    raw_proxies = []
-    for url in sources:
+    proxy_candidates = []
+    for proto, url in sources:
         try:
             r = requests.get(url, timeout=5)
             if r.status_code == 200:
-                raw_proxies.extend([p.strip() for p in r.text.strip().split("\n") if p.strip()])
+                lines = [l.strip() for l in r.text.strip().split("\n") if l.strip()]
+                for p in lines:
+                    if proto == "socks5":
+                        proxy_candidates.append(f"socks5://{p}")
+                    else:
+                        proxy_candidates.append(f"http://{p}")
         except Exception as e:
             print(f"فشل جلب قائمة البروكسي من {url}: {e}")
             
-    if not raw_proxies:
+    if not proxy_candidates:
         print("⚠️ لم يتم العثور على بروكسيات في المصادر...")
         return None
         
     # إزالة التكرار وخلط القائمة
-    raw_proxies = list(set(raw_proxies))
-    random.shuffle(raw_proxies)
+    proxy_candidates = list(set(proxy_candidates))
+    random.shuffle(proxy_candidates)
     
-    # فحص 30 بروكسي بالتوازي (Fast Multi-threading) لاختيار الأسرع
-    proxy_candidates = [f"socks5://{p}" for p in raw_proxies[:30]]
+    # فحص 35 بروكسي بالتوازي (Fast Multi-threading) لاختيار الأسرع
     working_candidates = []
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
-        results = executor.map(test_single_proxy, proxy_candidates)
+        results = executor.map(test_single_proxy, proxy_candidates[:35])
         for r in results:
             if r:
                 working_candidates.append(r)
@@ -151,6 +159,8 @@ def cut_video(req: CutRequest):
 
     # جلب بروكسي للالتفاف على حظر البوت
     proxy = get_working_proxy()
+    if not proxy:
+        raise HTTPException(503, "جميع خوادم البروكسي المجانية غير متاحة حالياً. يرجى المحاولة مجدداً بعد ثوانٍ.")
 
     # تحديد صيغة تضمن أن يكون الفيديو H264 والصوت AAC ليعمل الـ MP4 على جميع المشغلات بدون مشاكل
     format_str = f"bestvideo[ext=mp4][height<={req.quality}]+bestaudio[ext=m4a]/best[ext=mp4]/best[height<={req.quality}]"
