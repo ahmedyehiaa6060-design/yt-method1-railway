@@ -31,42 +31,89 @@ def cleanup_old_files():
 threading.Thread(target=cleanup_old_files, daemon=True).start()
 
 
+
+import concurrent.futures
+
+# ذاكرة تخزين مؤقت للبروكسي الشغال لتجنب الفحص في كل طلب
+cached_proxy = None
+
+
+def test_single_proxy(proxy_str):
+    """يفحص بروكسي منفرد ويقيس سرعة الاستجابة بالثواني"""
+    try:
+        start = time.time()
+        test = requests.get(
+            "https://www.youtube.com",
+            proxies={"http": proxy_str, "https": proxy_str},
+            timeout=2.5
+        )
+        if test.status_code == 200:
+            latency = time.time() - start
+            return proxy_str, latency
+    except:
+        pass
+    return None
+
+
 def get_working_proxy():
-    """يجلب قائمة بروكسيات SOCKS5 مجانية ويبحث عن أول بروكسي يعمل للوصول إلى يوتيوب"""
-    print("⏳ جاري البحث عن بروكسي مجاني للالتفاف على الحظر...")
+    global cached_proxy
+    
+    # 1. إذا كان هناك بروكسي مخزن سابقاً، نتأكد أنه لا يزال يعمل لتوفير الوقت
+    if cached_proxy:
+        res = test_single_proxy(cached_proxy)
+        if res:
+            print(f"♻️ إعادة استخدام البروكسي المخزن والسريع: {cached_proxy}")
+            return cached_proxy
+        else:
+            print("⚠️ البروكسي المخزن توقف عن العمل، جاري البحث عن بديل...")
+            cached_proxy = None
+
+    print("⏳ جاري البحث عن بروكسيات SOCKS5 عالية الجودة والتفاف الحظر...")
+    
+    # مصادر مصفاة تعطي بروكسيات Anonymous / Elite سريعة
     sources = [
-        "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
-        "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt"
+        "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=1500&country=all&ssl=all&anonymity=anonymous",
+        "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt"
     ]
     
+    raw_proxies = []
     for url in sources:
         try:
             r = requests.get(url, timeout=5)
             if r.status_code == 200:
-                proxies = [p.strip() for p in r.text.strip().split("\n") if p.strip()]
-                random.shuffle(proxies)
-                
-                # فحص أول 15 بروكسي لتوفير الوقت
-                for p in proxies[:15]:
-                    proxy_str = f"socks5://{p}"
-                    try:
-                        # فحص سريع للبروكسي ضد يوتيوب
-                        test = requests.get(
-                            "https://www.youtube.com",
-                            proxies={"http": proxy_str, "https": proxy_str},
-                            timeout=3
-                        )
-                        if test.status_code == 200:
-                            print(f"🎯 تم العثور على بروكسي يعمل: {proxy_str}")
-                            return proxy_str
-                    except:
-                        continue
+                raw_proxies.extend([p.strip() for p in r.text.strip().split("\n") if p.strip()])
         except Exception as e:
             print(f"فشل جلب قائمة البروكسي من {url}: {e}")
-            continue
             
-    print("⚠️ لم يتم العثور على بروكسي مجاني سريع، سنحاول بدون بروكسي...")
+    if not raw_proxies:
+        print("⚠️ لم يتم العثور على بروكسيات في المصادر...")
+        return None
+        
+    # إزالة التكرار وخلط القائمة
+    raw_proxies = list(set(raw_proxies))
+    random.shuffle(raw_proxies)
+    
+    # فحص 30 بروكسي بالتوازي (Fast Multi-threading) لاختيار الأسرع
+    proxy_candidates = [f"socks5://{p}" for p in raw_proxies[:30]]
+    working_candidates = []
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+        results = executor.map(test_single_proxy, proxy_candidates)
+        for r in results:
+            if r:
+                working_candidates.append(r)
+                
+    if working_candidates:
+        # ترتيب البروكسيات من الأسرع للأبطأ واختيار الأفضل
+        working_candidates.sort(key=lambda x: x[1])
+        best_proxy = working_candidates[0][0]
+        print(f"🎯 تم اختيار أسرع بروكسي (زمن الاستجابة: {working_candidates[0][1]:.2f}s): {best_proxy}")
+        cached_proxy = best_proxy
+        return best_proxy
+        
+    print("⚠️ لم ينجح أي بروكسي في الفحص السريع...")
     return None
+
 
 
 class CutRequest(BaseModel):
@@ -105,9 +152,12 @@ def cut_video(req: CutRequest):
     # جلب بروكسي للالتفاف على حظر البوت
     proxy = get_working_proxy()
 
+    # تحديد صيغة تضمن أن يكون الفيديو H264 والصوت AAC ليعمل الـ MP4 على جميع المشغلات بدون مشاكل
+    format_str = f"bestvideo[ext=mp4][height<={req.quality}]+bestaudio[ext=m4a]/best[ext=mp4]/best[height<={req.quality}]"
+
     cmd = [
         "yt-dlp",
-        "-f", f"bestvideo[height<={req.quality}]+bestaudio/best[height<={req.quality}]",
+        "-f", format_str,
         "--download-sections", f"*{req.start_time}-{req.end_time}",
         "--merge-output-format", "mp4",
         "-o", output_path,
