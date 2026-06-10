@@ -1,20 +1,18 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
-import yt_dlp
-from yt_dlp.utils import download_range_func
+import subprocess
 import os
 import uuid
 import time
 import threading
 
-app = FastAPI(title="YT Segment Cutter - Method 1")
+app = FastAPI(title="YT Segment Cutter - Method 3")
 
 TEMP_DIR = "/tmp/yt_segments"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 
-# تنظيف الملفات الأقدم من 10 دقائق — ضروري لحماية الـ storage (1 GB فقط)
 def cleanup_old_files():
     while True:
         now = time.time()
@@ -33,8 +31,8 @@ threading.Thread(target=cleanup_old_files, daemon=True).start()
 
 class CutRequest(BaseModel):
     url: str
-    start_seconds: float
-    end_seconds: float
+    start_time: str      # "00:01:30"
+    end_time: str        # "00:02:00"
     quality: int = 720
 
 
@@ -42,15 +40,15 @@ class CutRequest(BaseModel):
 def home():
     return """
     <html>
-    <head><title>YT Segment Cutter</title></head>
-    <body style="font-family:sans-serif; max-width:600px; margin:50px auto; direction:rtl;">
-        <h1>🎬 YT Segment Cutter</h1>
-        <p>Method 1: yt-dlp Python API</p>
+    <head><title>YT Segment Cutter - Method 3</title></head>
+    <body style="font-family:sans-serif; max-width:600px; margin:50px auto;">
+        <h1>YT Segment Cutter - Method 3</h1>
+        <p>CLI --download-sections</p>
         <p>POST /cut</p>
         <pre>{
   "url": "https://www.youtube.com/watch?v=...",
-  "start_seconds": 10,
-  "end_seconds": 30,
+  "start_time": "00:00:10",
+  "end_time": "00:00:30",
   "quality": 720
 }</pre>
         <p>GET /health</p>
@@ -61,58 +59,45 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "method": "1 - yt-dlp Python API"}
+    return {"status": "ok", "method": "3 - yt-dlp CLI --download-sections"}
 
 
 @app.post("/cut")
 def cut_video(req: CutRequest):
-    # حماية الموارد
-    duration = req.end_seconds - req.start_seconds
-    if duration <= 0:
-        raise HTTPException(400, "end must be after start")
-    if duration > 300:
-        raise HTTPException(400, "max 5 minutes per cut")
     if req.quality not in [360, 480, 720, 1080, 1440, 2160]:
         raise HTTPException(400, "quality must be 360, 480, 720, 1080, 1440, or 2160")
 
     file_id = str(uuid.uuid4())[:8]
-    output_template = os.path.join(TEMP_DIR, f"{file_id}")
+    output_path = os.path.join(TEMP_DIR, f"{file_id}.mp4")
 
-    ydl_opts = {
-        'format': f'bestvideo[height<={req.quality}]+bestaudio/best[height<={req.quality}]',
-        'download_ranges': download_range_func(None, [(req.start_seconds, req.end_seconds)]),
-        'force_keyframes_at_cuts': True,
-        'merge_output_format': 'mp4',
-        'outtmpl': output_template,
-        'quiet': True,
-        'no_warnings': True,
-    }
+    cmd = [
+        "yt-dlp",
+        "-f", f"bestvideo[height<={req.quality}]+bestaudio/best[height<={req.quality}]",
+        "--download-sections", f"*{req.start_time}-{req.end_time}",
+        "--merge-output-format", "mp4",
+        "--force-keyframes-at-cuts",
+        "-o", output_path,
+        "--no-playlist",
+        req.url
+    ]
 
     start = time.time()
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(req.url, download=True)
-            title = info.get('title', 'video')
-    except Exception as e:
-        raise HTTPException(500, f"download failed: {str(e)}")
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
     elapsed = time.time() - start
 
-    # البحث عن الملف الناتج
-    actual_file = None
-    for f in os.listdir(TEMP_DIR):
-        if f.startswith(file_id):
-            actual_file = os.path.join(TEMP_DIR, f)
-            break
+    if result.returncode != 0:
+        raise HTTPException(500, f"download failed: {result.stderr[-500:]}")
 
-    if not actual_file or not os.path.exists(actual_file):
+    if not os.path.exists(output_path):
         raise HTTPException(500, "output file not found")
 
-    size_mb = os.path.getsize(actual_file) / (1024 * 1024)
-    print(f"✅ {title} | {size_mb:.1f}MB | {elapsed:.0f}s | {req.quality}p")
+    size_mb = os.path.getsize(output_path) / (1024 * 1024)
+    print(f"✅ {size_mb:.1f}MB | {elapsed:.0f}s | {req.quality}p")
 
     return FileResponse(
-        actual_file,
+        output_path,
         media_type="video/mp4",
-        filename=f"{title}_cut.mp4"
+        filename=f"cut_{file_id}.mp4"
     )
