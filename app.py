@@ -6,8 +6,10 @@ import os
 import uuid
 import time
 import threading
+import requests
+import random
 
-app = FastAPI(title="YT Segment Cutter - Method 3 Optimized")
+app = FastAPI(title="YT Segment Cutter - Method 3 Proxy-Rotated")
 
 TEMP_DIR = "/tmp/yt_segments"
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -29,10 +31,48 @@ def cleanup_old_files():
 threading.Thread(target=cleanup_old_files, daemon=True).start()
 
 
+def get_working_proxy():
+    """يجلب قائمة بروكسيات SOCKS5 مجانية ويبحث عن أول بروكسي يعمل للوصول إلى يوتيوب"""
+    print("⏳ جاري البحث عن بروكسي مجاني للالتفاف على الحظر...")
+    sources = [
+        "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
+        "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt"
+    ]
+    
+    for url in sources:
+        try:
+            r = requests.get(url, timeout=5)
+            if r.status_code == 200:
+                proxies = [p.strip() for p in r.text.strip().split("\n") if p.strip()]
+                random.shuffle(proxies)
+                
+                # فحص أول 15 بروكسي لتوفير الوقت
+                for p in proxies[:15]:
+                    proxy_str = f"socks5://{p}"
+                    try:
+                        # فحص سريع للبروكسي ضد يوتيوب
+                        test = requests.get(
+                            "https://www.youtube.com",
+                            proxies={"http": proxy_str, "https": proxy_str},
+                            timeout=3
+                        )
+                        if test.status_code == 200:
+                            print(f"🎯 تم العثور على بروكسي يعمل: {proxy_str}")
+                            return proxy_str
+                    except:
+                        continue
+        except Exception as e:
+            print(f"فشل جلب قائمة البروكسي من {url}: {e}")
+            continue
+            
+    print("⚠️ لم يتم العثور على بروكسي مجاني سريع، سنحاول بدون بروكسي...")
+    return None
+
+
 class CutRequest(BaseModel):
     url: str
-    start_time: str      # "00:01:30"
-    end_time: str        # "00:02:00"
+    start_time: str
+    end_time: str
     quality: int = 720
 
 
@@ -40,17 +80,10 @@ class CutRequest(BaseModel):
 def home():
     return """
     <html>
-    <head><title>YT Segment Cutter - Method 3 Optimized</title></head>
+    <head><title>YT Segment Cutter - Method 3 Proxy</title></head>
     <body style="font-family:sans-serif; max-width:600px; margin:50px auto;">
-        <h1>YT Segment Cutter - Method 3 (Optimized)</h1>
-        <p>CLI --download-sections (No Re-encoding = Low Memory)</p>
-        <p>POST /cut</p>
-        <pre>{
-  "url": "https://www.youtube.com/watch?v=...",
-  "start_time": "00:00:10",
-  "end_time": "00:00:30",
-  "quality": 1080
-}</pre>
+        <h1>YT Segment Cutter - Method 3 (Proxy-Rotated)</h1>
+        <p>CLI --download-sections with dynamic free proxy bypass</p>
     </body>
     </html>
     """
@@ -58,7 +91,7 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "method": "3 Optimized - yt-dlp CLI without re-encoding"}
+    return {"status": "ok", "method": "3 Optimized + Proxy Bypass"}
 
 
 @app.post("/cut")
@@ -69,17 +102,22 @@ def cut_video(req: CutRequest):
     file_id = str(uuid.uuid4())[:8]
     output_path = os.path.join(TEMP_DIR, f"{file_id}.mp4")
 
-    # حذفنا --force-keyframes-at-cuts لتجنب re-encoding وحماية الرام من الـ OOM (exit code -9)
+    # جلب بروكسي للالتفاف على حظر البوت
+    proxy = get_working_proxy()
+
     cmd = [
         "yt-dlp",
         "-f", f"bestvideo[height<={req.quality}]+bestaudio/best[height<={req.quality}]",
         "--download-sections", f"*{req.start_time}-{req.end_time}",
         "--merge-output-format", "mp4",
-        "--extractor-args", "youtube:player_client=android,ios",
         "-o", output_path,
         "--no-playlist",
-        req.url
     ]
+
+    if proxy:
+        cmd += ["--proxy", proxy]
+        
+    cmd.append(req.url)
 
     start = time.time()
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
