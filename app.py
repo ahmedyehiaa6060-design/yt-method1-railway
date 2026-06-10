@@ -75,6 +75,7 @@ def cut_video(req: CutRequest):
         "-f", f"bestvideo[height<={req.quality}]+bestaudio/best[height<={req.quality}]",
         "--download-sections", f"*{req.start_time}-{req.end_time}",
         "--merge-output-format", "mp4",
+        "--extractor-args", "youtube:player_client=android,ios",
         "-o", output_path,
         "--no-playlist",
         req.url
