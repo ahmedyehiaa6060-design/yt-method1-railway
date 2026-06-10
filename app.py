@@ -7,7 +7,7 @@ import uuid
 import time
 import threading
 
-app = FastAPI(title="YT Segment Cutter - Method 4")
+app = FastAPI(title="YT Segment Cutter - Method 3 Optimized")
 
 TEMP_DIR = "/tmp/yt_segments"
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -31,8 +31,8 @@ threading.Thread(target=cleanup_old_files, daemon=True).start()
 
 class CutRequest(BaseModel):
     url: str
-    start_time: str
-    end_time: str
+    start_time: str      # "00:01:30"
+    end_time: str        # "00:02:00"
     quality: int = 720
 
 
@@ -40,10 +40,17 @@ class CutRequest(BaseModel):
 def home():
     return """
     <html>
-    <head><title>YT Segment Cutter - Method 4</title></head>
+    <head><title>YT Segment Cutter - Method 3 Optimized</title></head>
     <body style="font-family:sans-serif; max-width:600px; margin:50px auto;">
-        <h1>YT Segment Cutter - Method 4</h1>
-        <p>CLI get-url + ffmpeg stream (no full download, no re-encoding)</p>
+        <h1>YT Segment Cutter - Method 3 (Optimized)</h1>
+        <p>CLI --download-sections (No Re-encoding = Low Memory)</p>
+        <p>POST /cut</p>
+        <pre>{
+  "url": "https://www.youtube.com/watch?v=...",
+  "start_time": "00:00:10",
+  "end_time": "00:00:30",
+  "quality": 1080
+}</pre>
     </body>
     </html>
     """
@@ -51,7 +58,7 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "method": "4 - CLI get-url + ffmpeg stream"}
+    return {"status": "ok", "method": "3 Optimized - yt-dlp CLI without re-encoding"}
 
 
 @app.post("/cut")
@@ -60,45 +67,25 @@ def cut_video(req: CutRequest):
         raise HTTPException(400, "quality must be 360, 480, 720, 1080, 1440, or 2160")
 
     file_id = str(uuid.uuid4())[:8]
-    output_path = os.path.join(TEMP_DIR, f"{file_id}.mkv")
+    output_path = os.path.join(TEMP_DIR, f"{file_id}.mp4")
 
-    # الخطوة 1: استخراج الروابط بـ CLI (زي الطريقة 3 اللي نجحت)
-    try:
-        video_url = subprocess.check_output([
-            "yt-dlp", "-f", f"bestvideo[height<={req.quality}]",
-            "--get-url", "--no-playlist", req.url
-        ], text=True, timeout=30).strip()
-
-        audio_url = subprocess.check_output([
-            "yt-dlp", "-f", "bestaudio",
-            "--get-url", "--no-playlist", req.url
-        ], text=True, timeout=30).strip()
-    except Exception as e:
-        raise HTTPException(500, f"get-url failed: {str(e)}")
-
-    # الخطوة 2: ffmpeg يقص من الـ stream مباشرة
-    # -c copy = لا re-encoding = رام منخفض
-    # mkv = يدعم كل الـ codecs
-    ffmpeg_cmd = [
-        "ffmpeg", "-y",
-        "-ss", req.start_time,
-        "-to", req.end_time,
-        "-i", video_url,
-        "-ss", req.start_time,
-        "-to", req.end_time,
-        "-i", audio_url,
-        "-map", "0:v:0",
-        "-map", "1:a:0",
-        "-c", "copy",
-        output_path
+    # حذفنا --force-keyframes-at-cuts لتجنب re-encoding وحماية الرام من الـ OOM (exit code -9)
+    cmd = [
+        "yt-dlp",
+        "-f", f"bestvideo[height<={req.quality}]+bestaudio/best[height<={req.quality}]",
+        "--download-sections", f"*{req.start_time}-{req.end_time}",
+        "--merge-output-format", "mp4",
+        "-o", output_path,
+        "--no-playlist",
+        req.url
     ]
 
     start = time.time()
-    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=120)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     elapsed = time.time() - start
 
     if result.returncode != 0:
-        raise HTTPException(500, f"ffmpeg failed: {result.stderr[-300:]}")
+        raise HTTPException(500, f"download failed: {result.stderr[-500:]}")
 
     if not os.path.exists(output_path):
         raise HTTPException(500, "output file not found")
@@ -108,6 +95,6 @@ def cut_video(req: CutRequest):
 
     return FileResponse(
         output_path,
-        media_type="video/x-matroska",
-        filename=f"cut_{file_id}.mkv"
+        media_type="video/mp4",
+        filename=f"cut_{file_id}.mp4"
     )
