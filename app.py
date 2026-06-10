@@ -6,7 +6,6 @@ import os
 import uuid
 import time
 import threading
-import yt_dlp
 
 app = FastAPI(title="YT Segment Cutter - Method 4")
 
@@ -44,7 +43,7 @@ def home():
     <head><title>YT Segment Cutter - Method 4</title></head>
     <body style="font-family:sans-serif; max-width:600px; margin:50px auto;">
         <h1>YT Segment Cutter - Method 4</h1>
-        <p>Stream + Re-encode (precise cuts)</p>
+        <p>CLI get-url + ffmpeg stream (no full download, no re-encoding)</p>
     </body>
     </html>
     """
@@ -52,7 +51,7 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "method": "4 - Stream + Re-encode"}
+    return {"status": "ok", "method": "4 - CLI get-url + ffmpeg stream"}
 
 
 @app.post("/cut")
@@ -61,63 +60,41 @@ def cut_video(req: CutRequest):
         raise HTTPException(400, "quality must be 360, 480, 720, 1080, 1440, or 2160")
 
     file_id = str(uuid.uuid4())[:8]
-    output_path = os.path.join(TEMP_DIR, f"{file_id}.mp4")
+    output_path = os.path.join(TEMP_DIR, f"{file_id}.mkv")
 
-    # استخراج الروابط المباشرة
-    ydl_opts = {'quiet': True, 'no_warnings': True}
+    # الخطوة 1: استخراج الروابط بـ CLI (زي الطريقة 3 اللي نجحت)
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(req.url, download=False)
+        video_url = subprocess.check_output([
+            "yt-dlp", "-f", f"bestvideo[height<={req.quality}]",
+            "--get-url", "--no-playlist", req.url
+        ], text=True, timeout=30).strip()
+
+        audio_url = subprocess.check_output([
+            "yt-dlp", "-f", "bestaudio",
+            "--get-url", "--no-playlist", req.url
+        ], text=True, timeout=30).strip()
     except Exception as e:
-        raise HTTPException(500, f"extract failed: {str(e)}")
+        raise HTTPException(500, f"get-url failed: {str(e)}")
 
-    video_formats = [f for f in info['formats']
-                     if f.get('vcodec', 'none') != 'none'
-                     and f.get('height') and f['height'] <= req.quality
-                     and f.get('url')]
-    audio_formats = [f for f in info['formats']
-                     if f.get('acodec', 'none') != 'none'
-                     and (f.get('vcodec', 'none') == 'none' or f.get('vcodec') is None)
-                     and f.get('url')]
-
-    if not video_formats:
-        raise HTTPException(500, "no video formats found")
-
-    video_formats.sort(key=lambda x: (x.get('height', 0), x.get('tbr', 0)), reverse=True)
-    audio_formats.sort(key=lambda x: x.get('abr', 0), reverse=True)
-
-    best_video = video_formats[0]
-    best_audio = audio_formats[0] if audio_formats else None
-
-    # ffmpeg: stream + re-encode بدقة عالية
+    # الخطوة 2: ffmpeg يقص من الـ stream مباشرة
+    # -c copy = لا re-encoding = رام منخفض
+    # mkv = يدعم كل الـ codecs
     ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-ss", req.start_time,
         "-to", req.end_time,
-        "-i", best_video['url'],
-    ]
-
-    if best_audio:
-        ffmpeg_cmd += [
-            "-ss", req.start_time,
-            "-to", req.end_time,
-            "-i", best_audio['url'],
-            "-map", "0:v:0",
-            "-map", "1:a:0",
-        ]
-
-    ffmpeg_cmd += [
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "23",
-        "-c:a", "aac",
-        "-b:a", "128k",
-        "-movflags", "+faststart",
+        "-i", video_url,
+        "-ss", req.start_time,
+        "-to", req.end_time,
+        "-i", audio_url,
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        "-c", "copy",
         output_path
     ]
 
     start = time.time()
-    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=300)
+    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=120)
     elapsed = time.time() - start
 
     if result.returncode != 0:
@@ -131,6 +108,6 @@ def cut_video(req: CutRequest):
 
     return FileResponse(
         output_path,
-        media_type="video/mp4",
-        filename=f"cut_{file_id}.mp4"
+        media_type="video/x-matroska",
+        filename=f"cut_{file_id}.mkv"
     )
