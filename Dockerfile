@@ -16,7 +16,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # تثبيت نسخة nightly الأحدث من yt-dlp
 RUN pip install -U --pre "yt-dlp[default]"
 
-COPY app.py .
+# نسخ جميع ملفات المشروع (بما فيها cookies.txt إن وُجدت)
+COPY . .
 
 EXPOSE 8080
 
