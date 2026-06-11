@@ -2,14 +2,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 import yt_dlp
-from yt_dlp.utils import download_range_func
 import os
 import uuid
 import time
 import shutil
 import threading
+import subprocess
 
-app = FastAPI(title="YT Segment Cutter - Method 5 (Deno + Cookies)")
+app = FastAPI(title="YT Segment Cutter - Method 5 (Deno + Cookies + Custom FFmpeg)")
 
 TEMP_DIR = "/tmp/yt_segments"
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -91,7 +91,7 @@ def home():
     return f"""
     <html>
     <head>
-        <title>YT Segment Cutter - Method 5 (Deno + Cookies)</title>
+        <title>YT Segment Cutter - Custom FFmpeg</title>
         <style>
             body {{ font-family: sans-serif; max-width: 600px; margin: 50px auto; line-height: 1.6; }}
             h1 {{ color: #2c3e50; }}
@@ -101,7 +101,7 @@ def home():
     </head>
     <body>
         <h1>YT Segment Cutter</h1>
-        <p>Running Method 5 (Deno + Cookies) using <code>yt-dlp</code> Nightly Python API.</p>
+        <p>Running Custom FFmpeg Transcoding using <code>yt-dlp</code> Nightly Info Extractor.</p>
         <div class="status-box">
             <strong>Cookies Status:</strong> {cookies_status}
         </div>
@@ -115,7 +115,7 @@ def health():
     has_cookies = os.path.exists(COOKIE_FILE_PATH) and os.path.getsize(COOKIE_FILE_PATH) > 0
     return {
         "status": "ok", 
-        "method": "Method 5 (Deno + Cookies)",
+        "method": "Custom FFmpeg Transcoder",
         "cookies_loaded": has_cookies
     }
 
@@ -134,95 +134,106 @@ def cut_video(req: CutRequest):
     if start_sec >= end_sec:
         raise HTTPException(400, "start_time must be less than end_time")
 
+    duration_sec = end_sec - start_sec
     file_id = str(uuid.uuid4())[:8]
-    outtmpl_path = os.path.join(TEMP_DIR, f"{file_id}.%(ext)s")
+    output_path = os.path.join(TEMP_DIR, f"{file_id}.mp4")
 
-    # إعداد ديناميكي للصيغ ودقة القص بناء على الجودة المطلوبة
-    if req.quality <= 1080:
-        # للجودات العادية: نطلب MP4 الأصلي وقص دقيق بالثانية
-        format_str = f'bestvideo[ext=mp4][height<={req.quality}]+bestaudio[ext=m4a]/best[ext=mp4]/best[height<={req.quality}]'
-        merge_fmt = 'mp4'
-        force_keyframes = True
-    else:
-        # للجودات العالية جداً (2K/4K): نطلب أفضل الجودات المتاحة (WebM) وندمجها في حاوية MKV الآمنة التي تدعم دمج أي ترميزات بدون تلف
-        format_str = f'bestvideo[height<={req.quality}]+bestaudio/best[height<={req.quality}]'
-        merge_fmt = 'mkv'
-        force_keyframes = False
-        print(f"⚠️ High quality ({req.quality}p) requested. Using native formats and MKV container to prevent codec mismatch.")
-
-    # إعدادات التخطي المعتمدة على Deno والكوكيز
+    # 1. تهيئة خيارات استخراج المعلومات من yt-dlp لتفادي الحظر
     ydl_opts = {
-        'format': format_str,
-        'merge_output_format': merge_fmt,
-        'outtmpl': outtmpl_path,
-        
-        # 1. تحديد مجال القص بدقة
-        'download_ranges': download_range_func(None, [(start_sec, end_sec)]),
-        'force_keyframes_at_cuts': force_keyframes,
-        
-        # 2. إجبار الاتصال عبر IPv4 لتفادي حظر IPv6 الجماعي
-        'source_address': '0.0.0.0',
-        
-        # 3. محاكاة متصفح حديث
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-        },
-        
-        # 4. تحديد عدد الـ threads إلى 1 لتفادي استهلاك الرامات (OOM Crash)
-        'external_downloader_args': {
-            'ffmpeg': ['-threads', '1']
-        },
-        'postprocessor_args': {
-            'ffmpeg': ['-threads', '1']
-        },
-        
         'quiet': True,
         'no_warnings': True,
+        'source_address': '0.0.0.0',
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+        }
     }
 
-    # 5. تمرير ملف الكوكيز إذا تم تهيئته
     if os.path.exists(COOKIE_FILE_PATH) and os.path.getsize(COOKIE_FILE_PATH) > 0:
         ydl_opts['cookiefile'] = COOKIE_FILE_PATH
-        print("💡 Using cookies.txt for this download request.")
 
-    start = time.time()
+    print(f"⏳ Extracting stream URLs for quality {req.quality}p...")
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([req.url])
+            info = ydl.extract_info(req.url, download=False)
     except Exception as e:
-        for f in os.listdir(TEMP_DIR):
-            if f.startswith(file_id):
-                try: os.remove(os.path.join(TEMP_DIR, f))
-                except: pass
-        raise HTTPException(500, f"Download failed: {str(e)}")
+        raise HTTPException(500, f"Failed to extract video info: {str(e)}")
+
+    # 2. تصفية واختيار بث الفيديو المناسب (منطق كود العميل)
+    video_formats = [
+        f for f in info.get('formats', [])
+        if f.get('vcodec') != 'none'
+        and f.get('acodec') == 'none'
+        and f.get('ext') == 'mp4'
+        and (f.get('height', 0) <= req.quality)
+    ]
+    video_formats.sort(key=lambda x: x.get('height', 0), reverse=True)
+
+    # اختيار أعلى جودة mp4 متاحة كبديل إن لم يجد المطلوب
+    if not video_formats:
+        print("⚠️ No matching MP4 format found. Falling back to any MP4 video stream.")
+        video_formats = [
+            f for f in info.get('formats', [])
+            if f.get('vcodec') != 'none'
+            and f.get('acodec') == 'none'
+            and f.get('ext') == 'mp4'
+        ]
+        video_formats.sort(key=lambda x: x.get('height', 0), reverse=True)
+
+    if not video_formats:
+        raise HTTPException(500, "Could not find a suitable MP4 video stream")
+
+    video_url = video_formats[0]['url']
+    selected_height = video_formats[0].get('height', 0)
+    print(f"🎬 Selected Video Stream: {selected_height}p")
+
+    # 3. تصفية واختيار بث الصوت بأعلى جودة
+    audio_formats = [
+        f for f in info.get('formats', [])
+        if f.get('acodec') != 'none'
+        and f.get('vcodec') == 'none'
+    ]
+    audio_formats.sort(key=lambda x: x.get('abr', 0), reverse=True)
+
+    if not audio_formats:
+        raise HTTPException(500, "Could not find a suitable audio stream")
+
+    audio_url = audio_formats[0]['url']
+
+    # 4. تشغيل المعالجة والقص عبر ffmpeg باستخدام المعاملات الموفرة للموارد
+    print(f"🎬 Processing segment: {req.start_time} to {req.end_time}...")
+    start_time_proc = time.time()
     
-    elapsed = time.time() - start
+    ffmpeg_cmd = [
+        'ffmpeg', '-y',
+        '-ss', str(start_sec), '-i', video_url,
+        '-ss', str(start_sec), '-i', audio_url,
+        '-t', str(duration_sec),
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',   # ultrafast يقلل استهلاك الرام لـ 150MB فقط ويمنع الـ OOM
+        '-crf', '20',             # جودة عالية جداً وصورة ممتازة
+        '-threads', '1',          # خيط معالجة واحد لمنع تضخم الرام في Railway
+        '-c:a', 'aac', '-b:a', '192k',
+        '-movflags', '+faststart',
+        output_path
+    ]
 
-    # البحث عن الملف الفعلي الناتج وتحديد صيغته وموقعه
-    actual_file = None
-    for f in os.listdir(TEMP_DIR):
-        if f.startswith(file_id):
-            actual_file = os.path.join(TEMP_DIR, f)
-            break
+    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+    elapsed = time.time() - start_time_proc
 
-    if not actual_file or not os.path.exists(actual_file):
-        raise HTTPException(500, "Output file was not generated by yt-dlp")
+    if result.returncode != 0:
+        if os.path.exists(output_path):
+            try: os.remove(output_path)
+            except: pass
+        raise HTTPException(500, f"FFmpeg processing failed: {result.stderr}")
 
-    # تحديد نوع الميديا ديناميكياً
-    ext = os.path.splitext(actual_file)[1].lower()
-    media_type = "video/mp4"
-    if ext == ".webm":
-        media_type = "video/webm"
-    elif ext == ".mkv":
-        media_type = "video/x-matroska"
+    if not os.path.exists(output_path):
+        raise HTTPException(500, "Output MP4 file was not generated")
 
-    size_mb = os.path.getsize(actual_file) / (1024 * 1024)
-    print(f"✅ {size_mb:.2f}MB | {elapsed:.1f}s | {req.quality}p | Format: {ext} (Method 5 Deno+Cookies)")
+    size_mb = os.path.getsize(output_path) / (1024 * 1024)
+    print(f"✅ Success! {size_mb:.2f}MB | {elapsed:.1f}s | {selected_height}p MP4")
 
     return FileResponse(
-        actual_file,
-        media_type=media_type,
-        filename=f"cut_{file_id}{ext}"
+        output_path,
+        media_type="video/mp4",
+        filename=f"cut_{file_id}.mp4"
     )
