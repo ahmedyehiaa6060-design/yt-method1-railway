@@ -138,6 +138,13 @@ def cut_video(req: CutRequest):
     outtmpl_path = os.path.join(TEMP_DIR, f"{file_id}.%(ext)s")
     output_path = os.path.join(TEMP_DIR, f"{file_id}.mp4")
 
+    # تحديد ذكي لدقة القص بناء على الجودة المطلوبة لتفادي الانهيار OOM
+    # الجودات العالية جدا (أكبر من 1080) تتطلب رام ضخم لإعادة الترميز
+    force_keyframes = True
+    if req.quality > 1080:
+        force_keyframes = False
+        print(f"⚠️ High quality ({req.quality}p) requested. Disabling force_keyframes_at_cuts to prevent OOM crash.")
+
     # إعدادات التخطي المعتمدة على Deno والكوكيز
     ydl_opts = {
         # 1. الجودة والصيغة والدمج
@@ -147,7 +154,7 @@ def cut_video(req: CutRequest):
         
         # 2. تحديد مجال القص بدقة
         'download_ranges': download_range_func(None, [(start_sec, end_sec)]),
-        'force_keyframes_at_cuts': True,
+        'force_keyframes_at_cuts': force_keyframes,
         
         # 3. إجبار الاتصال عبر IPv4 لتفادي حظر IPv6 الجماعي في السيرفرات
         'source_address': '0.0.0.0',
