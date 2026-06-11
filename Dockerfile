@@ -1,7 +1,12 @@
 FROM python:3.11-slim
 
-# تثبيت ffmpeg و nodejs (مطلوب كـ JS Runtime لتخطي حماية يوتيوب)
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg nodejs && rm -rf /var/lib/apt/lists/*
+# تثبيت curl و unzip لتنزيل Deno، و ffmpeg للقص والدمج
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl unzip && rm -rf /var/lib/apt/lists/*
+
+# تثبيت Deno (محرك الجافا سكربت المطلوب لتخطي تحديات يوتيوب الأمنية)
+RUN curl -fsSL https://deno.land/x/install/install.sh | sh
+ENV DENO_INSTALL="/root/.deno"
+ENV PATH="${DENO_INSTALL}/bin:${PATH}"
 
 WORKDIR /app
 
