@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import yt_dlp
 import os
@@ -10,6 +11,15 @@ import threading
 import subprocess
 
 app = FastAPI(title="YT Segment Cutter - Method 5 (Deno + Cookies + Custom FFmpeg)")
+
+# تفعيل الـ CORS لتشغيل الواجهة الأمامية من أي دومين (مثل Netlify)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 TEMP_DIR = "/tmp/yt_segments"
 os.makedirs(TEMP_DIR, exist_ok=True)
