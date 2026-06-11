@@ -85,7 +85,6 @@ def parse_time_to_seconds(time_str: str) -> float:
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    # التحقق من حالة الكوكيز لعرضها في صفحة السيرفر للتأكد
     has_cookies = os.path.exists(COOKIE_FILE_PATH) and os.path.getsize(COOKIE_FILE_PATH) > 0
     cookies_status = "<span style='color: green;'>Loaded (نشطة)</span>" if has_cookies else "<span style='color: red;'>Missing (غير متوفرة)</span>"
     
@@ -160,11 +159,19 @@ def cut_video(req: CutRequest):
             'Accept-Language': 'en-US,en;q=0.9',
         },
         
+        # 5. تحديد مسارات ffmpeg وتحديد عدد الـ threads إلى 1 لتفادي استهلاك الرامات (OOM Crash)
+        'external_downloader_args': {
+            'ffmpeg': ['-threads', '1']
+        },
+        'postprocessor_args': {
+            'ffmpeg': ['-threads', '1']
+        },
+        
         'quiet': True,
         'no_warnings': True,
     }
 
-    # 5. تمرير ملف الكوكيز إذا تم تهيئته
+    # 6. تمرير ملف الكوكيز إذا تم تهيئته
     if os.path.exists(COOKIE_FILE_PATH) and os.path.getsize(COOKIE_FILE_PATH) > 0:
         ydl_opts['cookiefile'] = COOKIE_FILE_PATH
         print("💡 Using cookies.txt for this download request.")
