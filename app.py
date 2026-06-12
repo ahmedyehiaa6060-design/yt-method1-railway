@@ -22,6 +22,7 @@ import threading
 import subprocess
 import jwt
 import requests
+from cryptography.x509 import load_pem_x509_certificate
 
 app = FastAPI(title="YT Segment Cutter - Method 5 (Deno + Cookies + Custom FFmpeg)")
 
@@ -81,9 +82,13 @@ def verify_firebase_token(token: str) -> dict:
         if not public_key_pem:
             raise Exception("No matching public certificate found")
             
+        # تحويل الشهادة X.509 إلى مفتاح عام صالح لمكتبة PyJWT
+        cert_obj = load_pem_x509_certificate(public_key_pem.encode('utf-8'))
+        public_key = cert_obj.public_key()
+            
         decoded = jwt.decode(
             token,
-            public_key_pem,
+            public_key,
             algorithms=["RS256"],
             audience=FIREBASE_PROJECT_ID,
             issuer=f"https://securetoken.google.com/{FIREBASE_PROJECT_ID}"
