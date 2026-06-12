@@ -38,7 +38,7 @@ FIREBASE_PROJECT_ID = os.environ.get("FIREBASE_PROJECT_ID", "")
 if not FIREBASE_PROJECT_ID:
     print("⚠️ WARNING: FIREBASE_PROJECT_ID env variable is not set! Token verification will be bypassed.")
 
-FIREBASE_CERTS_URL = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken-system@system.gserviceaccount.com"
+FIREBASE_CERTS_URL = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com"
 cached_certs = {}
 certs_expiry = 0
 
