@@ -1,4 +1,15 @@
-from fastapi import FastAPI, HTTPException
+import sys
+import io
+
+# Force UTF-8 encoding for standard output on Windows to support emojis and Arabic logs
+if sys.platform == "win32":
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+    except Exception:
+        pass
+
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -9,6 +20,8 @@ import time
 import shutil
 import threading
 import subprocess
+import jwt
+import requests
 
 app = FastAPI(title="YT Segment Cutter - Method 5 (Deno + Cookies + Custom FFmpeg)")
 
@@ -20,6 +33,65 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+FIREBASE_PROJECT_ID = os.environ.get("FIREBASE_PROJECT_ID", "")
+if not FIREBASE_PROJECT_ID:
+    print("⚠️ WARNING: FIREBASE_PROJECT_ID env variable is not set! Token verification will be bypassed.")
+
+FIREBASE_CERTS_URL = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken-system@system.gserviceaccount.com"
+cached_certs = {}
+certs_expiry = 0
+
+def get_firebase_public_keys():
+    global cached_certs, certs_expiry
+    now = time.time()
+    if not cached_certs or now > certs_expiry:
+        try:
+            res = requests.get(FIREBASE_CERTS_URL, timeout=10)
+            if res.ok:
+                cached_certs = res.json()
+                control = res.headers.get("Cache-Control", "")
+                max_age = 3600
+                for part in control.split(","):
+                    if "max-age" in part:
+                        try:
+                            max_age = int(part.split("=")[1])
+                        except:
+                            pass
+                certs_expiry = now + max_age
+        except Exception as e:
+            print(f"⚠️ Failed to fetch Firebase public certs: {e}")
+    return cached_certs
+
+def verify_firebase_token(token: str) -> dict:
+    if not FIREBASE_PROJECT_ID:
+        return {"uid": "local-dev-user", "name": "Local Dev"}
+
+    try:
+        if token.startswith("Bearer "):
+            token = token.split(" ")[1]
+            
+        headers = jwt.get_unverified_header(token)
+        kid = headers.get("kid")
+        if not kid:
+            raise Exception("No kid header in JWT")
+            
+        certs = get_firebase_public_keys()
+        public_key_pem = certs.get(kid)
+        if not public_key_pem:
+            raise Exception("No matching public certificate found")
+            
+        decoded = jwt.decode(
+            token,
+            public_key_pem,
+            algorithms=["RS256"],
+            audience=FIREBASE_PROJECT_ID,
+            issuer=f"https://securetoken.google.com/{FIREBASE_PROJECT_ID}"
+        )
+        return decoded
+    except Exception as e:
+        print(f"❌ Firebase token verification failed: {e}")
+        return None
 
 TEMP_DIR = "/tmp/yt_segments"
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -131,7 +203,14 @@ def health():
 
 
 @app.post("/cut")
-def cut_video(req: CutRequest):
+def cut_video(req: CutRequest, authorization: str = Header(None)):
+    if FIREBASE_PROJECT_ID:
+        if not authorization:
+            raise HTTPException(401, "Authorization token is missing")
+        decoded_token = verify_firebase_token(authorization)
+        if not decoded_token:
+            raise HTTPException(401, "Invalid or expired authorization token")
+
     if req.quality not in [360, 480, 720, 1080, 1440, 2160]:
         raise HTTPException(400, "quality must be 360, 480, 720, 1080, 1440, or 2160")
 
